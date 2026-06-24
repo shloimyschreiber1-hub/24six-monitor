@@ -82,17 +82,20 @@ export default async (req) => {
     await page.click('button[type="submit"]');
 
     await page.waitForLoadState("networkidle", { timeout: 25000 });
-    log("Logged in.");
+    log("Logged in. Current URL:", page.url());
 
     // --- 2. Pick a profile (Netflix-style picker) ---
     // Confirmed selector from inspecting the real 24six profile screen:
     // <div class="profile-select-avatar"><div class="avatar-holder">...
+    // Give the page extra time to render the profile tiles before trying.
     log("Selecting profile...");
     try {
-      await page.click('.avatar-holder', { timeout: 10000 });
-      await page.waitForTimeout(1500);
+      await page.waitForSelector('.avatar-holder', { timeout: 15000 });
+      await page.click('.avatar-holder');
+      await page.waitForTimeout(2000);
+      log("Profile clicked. Current URL:", page.url());
     } catch (err) {
-      log("No profile picker appeared (or selector needs updating) — continuing.");
+      log("No profile picker appeared (or selector needs updating) — continuing. Current URL:", page.url());
     }
 
     // --- 3. Enter PIN (one digit per box) ---
@@ -100,6 +103,7 @@ export default async (req) => {
     // <input type="text" maxlength="1" data-index="0/1/2/3" ...>
     log("Entering PIN...");
     try {
+      await page.waitForSelector('input[maxlength="1"][data-index]', { timeout: 15000 });
       const pinDigits = TFS24_PIN.split("");
       const pinInputs = await page.$$('input[maxlength="1"][data-index]');
 
@@ -107,22 +111,23 @@ export default async (req) => {
         for (let i = 0; i < pinDigits.length; i++) {
           await pinInputs[i].fill(pinDigits[i]);
         }
-        await page.waitForTimeout(1500);
-        log("PIN entered.");
+        await page.waitForTimeout(2000);
+        log("PIN entered. Current URL:", page.url());
       } else {
         log(
           `Expected ${pinDigits.length} PIN input boxes but found ${pinInputs.length} — selector likely needs updating.`
         );
       }
     } catch (err) {
-      log("PIN entry failed (selector likely needs updating):", err.message);
+      log("PIN entry failed (selector likely needs updating or screen never appeared):", err.message, "Current URL:", page.url());
     }
 
     await page.waitForLoadState("networkidle", { timeout: 25000 }).catch(() => {});
 
     // --- 4. Go to the music page ---
-    log("Navigating to music page...");
+    log("Navigating to music page... Current URL before nav:", page.url());
     await page.goto(MUSIC_URL, { waitUntil: "networkidle", timeout: 25000 });
+    log("After navigating to music page, current URL:", page.url());
 
     // Give any client-side rendering a moment to finish populating the list.
     await page.waitForTimeout(3000);
@@ -202,6 +207,16 @@ export default async (req) => {
         "if the real section names don't contain 'new single', 'new album', or " +
         "'featured new release', update the wantedKeywords list in this file to match."
       );
+      // Extra diagnostic: capture page title and a snippet of body text so
+      // we can tell whether we actually reached the music page or got
+      // stuck somewhere earlier (e.g. still on PIN screen, redirected to
+      // login, hit an error page, etc.)
+      const pageTitle = await page.title().catch(() => "(could not read title)");
+      const bodySnippet = await page
+        .evaluate(() => document.body.innerText.slice(0, 300))
+        .catch(() => "(could not read body text)");
+      log("Diagnostic — page title:", pageTitle);
+      log("Diagnostic — body text snippet:", bodySnippet);
     }
 
     // --- 6. Compare to last seen ---
