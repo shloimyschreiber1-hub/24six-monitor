@@ -85,29 +85,23 @@ export default async (req) => {
     log("Logged in.");
 
     // --- 2. Pick a profile (Netflix-style picker) ---
-    // NOTE: placeholder selector. Inspect the real profile picker page,
-    // find the element wrapping each profile tile, and update this.
-    // If there's only ever one profile, this click may not be needed at
-    // all — but it's safer to try clicking the first/only one.
+    // Confirmed selector from inspecting the real 24six profile screen:
+    // <div class="profile-select-avatar"><div class="avatar-holder">...
     log("Selecting profile...");
     try {
-      await page.click('.profile-tile, [data-testid="profile-tile"], .profile-card', {
-        timeout: 10000,
-      });
+      await page.click('.avatar-holder', { timeout: 10000 });
       await page.waitForTimeout(1500);
     } catch (err) {
       log("No profile picker appeared (or selector needs updating) — continuing.");
     }
 
     // --- 3. Enter PIN (one digit per box) ---
-    // NOTE: placeholder selector. Inspect the real PIN screen — find the
-    // input boxes for each digit. They're often a row of single-character
-    // inputs. Update the selector below to match (e.g. '.pin-input',
-    // 'input[data-pin-digit]', etc.)
+    // Confirmed selector from inspecting the real 24six PIN screen:
+    // <input type="text" maxlength="1" data-index="0/1/2/3" ...>
     log("Entering PIN...");
     try {
       const pinDigits = TFS24_PIN.split("");
-      const pinInputs = await page.$$('.pin-input, [data-testid="pin-digit"], input[maxlength="1"]');
+      const pinInputs = await page.$$('input[maxlength="1"][data-index]');
 
       if (pinInputs.length >= pinDigits.length) {
         for (let i = 0; i < pinDigits.length; i++) {
@@ -133,19 +127,81 @@ export default async (req) => {
     // Give any client-side rendering a moment to finish populating the list.
     await page.waitForTimeout(3000);
 
-    // --- 5. Extract song titles ---
-    // NOTE: this selector is a placeholder. Inspect the real page,
-    // find the element that wraps each song's title, and update this.
-    // Common patterns: '.song-title', '[data-testid="song-title"]', 'li.track h3'
-    const songs = await page.$$eval(
-      '.song-title, [data-testid="song-title"], .track-title',
-      (els) => els.map((el) => el.textContent.trim()).filter(Boolean)
-    );
+    // --- 5. Extract titles from "New Singles", "New Albums", and
+    //         "Featured New Releases" only (per your request — other
+    //         sections like Trending Now are intentionally ignored) ---
+    //
+    // The page embeds its full content as JSON in a data-page attribute
+    // on the #app div, rather than plain text in the DOM. We read that
+    // attribute and search through ALL its sections for ones whose
+    // headline matches the three we care about, by partial/case-insensitive
+    // match — so small wording differences (e.g. "New Singles 2026" or
+    // "Featured: New Releases") still match.
+    const { songs, debugSectionNames } = await page.evaluate(() => {
+      const appDiv = document.querySelector("#app[data-page]");
+      if (!appDiv) return { songs: [], debugSectionNames: [] };
 
-    log(`Found ${songs.length} songs on page.`);
+      let data;
+      try {
+        data = JSON.parse(appDiv.getAttribute("data-page"));
+      } catch (e) {
+        return { songs: [], debugSectionNames: [] };
+      }
+
+      const wantedKeywords = ["new single", "new album", "featured new release"];
+      const titles = [];
+      const debugSectionNames = [];
+
+      // Recursively walk the whole JSON object looking for any section
+      // that has a "headline" (or "title" used as a section header) and
+      // a "tiles" (or similar) array of items underneath it — this covers
+      // sections wherever they live in the structure, without needing to
+      // know the exact key path in advance.
+      function walk(node) {
+        if (!node || typeof node !== "object") return;
+
+        if (Array.isArray(node)) {
+          for (const item of node) walk(item);
+          return;
+        }
+
+        const headline = (node.headline || node.section_title || "").toString();
+        const itemsArray = node.tiles || node.items || node.results;
+
+        if (headline) {
+          debugSectionNames.push(headline);
+        }
+
+        if (headline && Array.isArray(itemsArray)) {
+          const headlineLower = headline.toLowerCase();
+          const matches = wantedKeywords.some((kw) => headlineLower.includes(kw));
+          if (matches) {
+            for (const t of itemsArray) {
+              if (t && t.title) titles.push(t.title);
+            }
+          }
+        }
+
+        for (const key in node) {
+          if (key === "headline" || key === "section_title") continue;
+          walk(node[key]);
+        }
+      }
+
+      walk(data);
+
+      return { songs: [...new Set(titles)].filter(Boolean), debugSectionNames };
+    });
+
+    log(`Found ${songs.length} matching items (New Singles / New Albums / Featured New Releases).`);
+    log("All section headlines seen on page (for reference):", JSON.stringify(debugSectionNames));
 
     if (songs.length === 0) {
-      log("No songs found — selector probably needs updating. See comments in this file.");
+      log(
+        "No matching items found. Check the section headlines logged above — " +
+        "if the real section names don't contain 'new single', 'new album', or " +
+        "'featured new release', update the wantedKeywords list in this file to match."
+      );
     }
 
     // --- 6. Compare to last seen ---
