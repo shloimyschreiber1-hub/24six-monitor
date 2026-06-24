@@ -1,0 +1,17 @@
+[build]
+  functions = "netlify/functions"
+
+# Runs every 30 minutes. This function is lightweight — it just
+# kicks off the real check, which runs as a background function
+# (background functions can run up to 15 minutes, scheduled ones
+# are capped at 30 seconds, so we can't do the actual browser work here).
+[functions."trigger-check"]
+  schedule = "*/30 * * * *"
+
+[functions]
+  node_bundler = "esbuild"
+
+  # The headless Chromium binary used by @sparticuz/chromium is large —
+  # this makes sure it gets bundled into the function correctly.
+  [functions."check-music-background"]
+    included_files = ["node_modules/@sparticuz/chromium/**"]

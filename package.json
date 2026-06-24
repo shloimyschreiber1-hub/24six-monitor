@@ -1,0 +1,15 @@
+{
+  "name": "24six-monitor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Checks 24six.app/app/music every 30 minutes for new songs and emails an alert when something new appears.",
+  "scripts": {
+    "test-local": "node netlify/functions/check-music.mjs"
+  },
+  "dependencies": {
+    "@netlify/blobs": "^8.1.0",
+    "@sparticuz/chromium": "^131.0.1",
+    "playwright-core": "^1.49.1",
+    "resend": "^4.0.1"
+  }
+}
