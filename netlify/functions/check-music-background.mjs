@@ -13,10 +13,15 @@
 // Site configuration > Environment variables — never commit them):
 //   TFS24_EMAIL          your 24six.app login email
 //   TFS24_PASSWORD       your 24six.app login password
+//   TFS24_PIN            your 24six.app profile PIN (numeric, entered
+//                        one digit per box after picking a profile)
 //   RESEND_API_KEY       API key from resend.com
 //   ALERT_EMAIL_TO       where to send the "new songs" alert
 //   ALERT_EMAIL_FROM     a "from" address verified in Resend
 //                        (e.g. alerts@yourdomain.com)
+//
+// Login flow handled below: email/password -> pick profile -> enter
+// PIN (one digit per box, Netflix-style) -> music page.
 
 import chromium from "@sparticuz/chromium";
 import { chromium as playwright } from "playwright-core";
@@ -34,6 +39,7 @@ export default async (req) => {
   const {
     TFS24_EMAIL,
     TFS24_PASSWORD,
+    TFS24_PIN,
     RESEND_API_KEY,
     ALERT_EMAIL_TO,
     ALERT_EMAIL_FROM,
@@ -42,6 +48,10 @@ export default async (req) => {
   if (!TFS24_EMAIL || !TFS24_PASSWORD) {
     log("Missing TFS24_EMAIL or TFS24_PASSWORD env vars. Aborting.");
     return new Response("Missing login credentials", { status: 500 });
+  }
+  if (!TFS24_PIN) {
+    log("Missing TFS24_PIN env var. Aborting.");
+    return new Response("Missing profile PIN", { status: 500 });
   }
   if (!RESEND_API_KEY || !ALERT_EMAIL_TO || !ALERT_EMAIL_FROM) {
     log("Missing email config env vars. Aborting.");
@@ -74,14 +84,56 @@ export default async (req) => {
     await page.waitForLoadState("networkidle", { timeout: 25000 });
     log("Logged in.");
 
-    // --- 2. Go to the music page ---
+    // --- 2. Pick a profile (Netflix-style picker) ---
+    // NOTE: placeholder selector. Inspect the real profile picker page,
+    // find the element wrapping each profile tile, and update this.
+    // If there's only ever one profile, this click may not be needed at
+    // all — but it's safer to try clicking the first/only one.
+    log("Selecting profile...");
+    try {
+      await page.click('.profile-tile, [data-testid="profile-tile"], .profile-card', {
+        timeout: 10000,
+      });
+      await page.waitForTimeout(1500);
+    } catch (err) {
+      log("No profile picker appeared (or selector needs updating) — continuing.");
+    }
+
+    // --- 3. Enter PIN (one digit per box) ---
+    // NOTE: placeholder selector. Inspect the real PIN screen — find the
+    // input boxes for each digit. They're often a row of single-character
+    // inputs. Update the selector below to match (e.g. '.pin-input',
+    // 'input[data-pin-digit]', etc.)
+    log("Entering PIN...");
+    try {
+      const pinDigits = TFS24_PIN.split("");
+      const pinInputs = await page.$$('.pin-input, [data-testid="pin-digit"], input[maxlength="1"]');
+
+      if (pinInputs.length >= pinDigits.length) {
+        for (let i = 0; i < pinDigits.length; i++) {
+          await pinInputs[i].fill(pinDigits[i]);
+        }
+        await page.waitForTimeout(1500);
+        log("PIN entered.");
+      } else {
+        log(
+          `Expected ${pinDigits.length} PIN input boxes but found ${pinInputs.length} — selector likely needs updating.`
+        );
+      }
+    } catch (err) {
+      log("PIN entry failed (selector likely needs updating):", err.message);
+    }
+
+    await page.waitForLoadState("networkidle", { timeout: 25000 }).catch(() => {});
+
+    // --- 4. Go to the music page ---
     log("Navigating to music page...");
     await page.goto(MUSIC_URL, { waitUntil: "networkidle", timeout: 25000 });
 
     // Give any client-side rendering a moment to finish populating the list.
     await page.waitForTimeout(3000);
 
-    // --- 3. Extract song titles ---
+    // --- 5. Extract song titles ---
     // NOTE: this selector is a placeholder. Inspect the real page,
     // find the element that wraps each song's title, and update this.
     // Common patterns: '.song-title', '[data-testid="song-title"]', 'li.track h3'
@@ -96,7 +148,7 @@ export default async (req) => {
       log("No songs found — selector probably needs updating. See comments in this file.");
     }
 
-    // --- 4. Compare to last seen ---
+    // --- 6. Compare to last seen ---
     const store = getStore(STORE_NAME);
     const previousRaw = await store.get(STORE_KEY, { type: "json" });
     const previousSongs = previousRaw?.songs || [];
@@ -105,7 +157,7 @@ export default async (req) => {
 
     log(`${newSongs.length} new song(s) since last check.`);
 
-    // --- 5. Email if there's something new (and this isn't the first run) ---
+    // --- 7. Email if there's something new (and this isn't the first run) ---
     if (newSongs.length > 0 && previousSongs.length > 0) {
       const resend = new Resend(RESEND_API_KEY);
 
@@ -126,7 +178,7 @@ export default async (req) => {
       log("No new songs — no email sent.");
     }
 
-    // --- 6. Save current list as new baseline ---
+    // --- 8. Save current list as new baseline ---
     await store.setJSON(STORE_KEY, {
       songs,
       checkedAt: new Date().toISOString(),
